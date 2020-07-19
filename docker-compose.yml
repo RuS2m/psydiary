@@ -1,0 +1,13 @@
+version: "3.2"
+
+services:
+    postgresql:
+        image: postgres:9.6
+        environment:
+            POSTGRES_HOST: localhost
+            POSTGRES_DB: db
+            POSTGRES_USER: admin
+            POSTGRES_HOST_AUTH_METHOD: trust
+            POSTGRES_PASSWORD:
+        ports:
+            - 5432:5432

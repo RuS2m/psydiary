@@ -12,5 +12,5 @@ Active functions:
     (A — Activitating Event, B – Beliefs, C – Consequences)
  - [ ] alarm will be automatically set on telegram bot for reminding to reflect on previous notes
  (after 3 days after written situation) 
- - [ ] ability to rate your self-esteem every day and watch your self-esteem ratings
+ - [x] ability to rate your self-esteem every day and watch your self-esteem ratings
  - [ ] calendar, made from buttons, shows all emotional situations notes
