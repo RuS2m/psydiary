@@ -1,0 +1,16 @@
+##################################################
+##                                              ##
+##                   psydiary                   ##
+##                                              ##
+##                 made by RuS2m                ##
+##                                              ##
+##################################################
+
+Diary for emotional situations with backtracking them, provided with Telegram bot.
+Active functions:
+ - [ ] ability to put notes in diary, based on ABC model for self-reflecting on emotional situations
+    (A — Activitating Event, B – Beliefs, C – Consequences)
+ - [ ] alarm will be automatically set on telegram bot for reminding to reflect on previous notes
+ (after 3 days after written situation) 
+ - [ ] ability to rate your self-esteem every day and watch your self-esteem ratings
+ - [ ] calendar, made from buttons, shows all emotional situations notes
