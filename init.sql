@@ -7,11 +7,11 @@ CREATE TABLE rates (
 CREATE TABLE diary (
     chat_id BIGINT,
     date_time   TIMESTAMP WITH TIME ZONE,
-    a1  TEXT,
+    a  TEXT,
+    b  TEXT,
+    c  TEXT,
     b1  TEXT,
     c1  TEXT,
-    a2  TEXT,
-    b2  TEXT,
-    c2  TEXT,
+    is_reflected    BOOLEAN,
     PRIMARY KEY(chat_id, date_time)
 );

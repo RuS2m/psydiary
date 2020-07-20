@@ -9,6 +9,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 from models import *
 import sys
+import calendar
 
 matplotlib.use('agg')
 logger = get_logger()
@@ -16,10 +17,11 @@ logger = get_logger()
 @run_async
 def start(bot: Bot, update: Update):
     chat_id = update.message.chat.id
-    text = 'Hello, how to use it:\n' \
-           '/note -- (TBD) add note\n' \
-           '/rate -- (TBD) rate your self-esteem\n' \
-           '/show -- (TBD) shows self-esteem graphs\n'
+    text = 'Hello, here instruction how to use this bot:\n' \
+           '/note -- add note\n' \
+           '/calendar -- show calendar, representing all notes\n' \
+           '/rate -- rate your self-esteem\n' \
+           '/show -- shows self-esteem graphs\n'
     bot.send_message(chat_id=chat_id, text=text)
 
 
@@ -107,24 +109,34 @@ def note(bot: Bot, update: Update):
     if len(abc) < 3:
         update.message.reply_text("Something went wrong, please provide text, spaced with two '#' signs :(")
     else:
-        a1 = abc[0]
-        b1 = abc[1]
-        c1 = abc[2]
-        save_note(chat_id, a1, b1, c1)
+        a = abc[0]
+        b = abc[1]
+        c = abc[2]
+        save_note(chat_id, a, b, c)
         update.message.reply_text("Note was successfully send")
 
 
 @run_async
-def calendar(bot: Bot, update: Update):
-    update.message.reply_text("Please select a date: ", reply_markup=create_calendar())
+def calendar_handler(bot: Bot, update: Update):
+    chat_id = update.message.chat.id
+    update.message.reply_text("Select date:", reply_markup=create_calendar(chat_id=chat_id))
 
-run_async
+@run_async
 def inline_handler(bot,update):
+    chat_id = update.effective_chat['id']
+    print(chat_id)
     selected,date = process_calendar_selection(bot, update)
     if selected:
+        notes = get_notes(chat_id, date)
+        strnotes = [ str(note) for note in notes ]
+        all_notes = "\n\n------------------------------\n\n".join(strnotes)
+        row = []
+        row.append(InlineKeyboardButton("🗓️",callback_data=create_callback_data("CALENDAR",date.year,date.month,date.day)))
+        reply_keyboard = InlineKeyboardMarkup([row])
         bot.send_message(chat_id=update.callback_query.from_user.id,
-                        text="You selected %s" % (date.strftime("%d/%m/%Y")),
-                        reply_markup=ReplyKeyboardRemove())
+                        text="<b>%s</b>\n\n %s" % (date.strftime("%d/%m/%Y"), all_notes),
+                        reply_markup=reply_keyboard,
+                        parse_mode='HTML')
 
 def create_callback_data(action,year,month,day):
     return ";".join([action,str(year),str(month),str(day)])
@@ -133,7 +145,7 @@ def separate_callback_data(data):
     return data.split(";")
 
 
-def create_calendar(year=None,month=None):
+def create_calendar(year=None,month=None,chat_id=None):
     now = datetime.datetime.now()
     if year == None: year = now.year
     if month == None: month = now.month
@@ -145,14 +157,26 @@ def create_calendar(year=None,month=None):
     keyboard.append(row)
 
     my_calendar = calendar.monthcalendar(year, month)
-    for week in range(len(my_calendar) - 1):
+    number_of_days = 0
+    for week in my_calendar:
+        for day in week:
+            if day != 0:
+                number_of_days+=1
+    notes = get_last_notes_existence_since_date(chat_id, datetime.date(year, month, number_of_days), number_of_days)
+    note_dates = [ note.note_date for note in notes ]
+    for week in range(len(my_calendar)):
         row=[]
-        for day in range(len(my_calendar[week]) - 1):
+        for day in range(len(my_calendar[week])):
             day_number = my_calendar[week][day]
             if(day_number==0):
                 row.append(InlineKeyboardButton(" ",callback_data=data_ignore))
             else:
-                row.append(InlineKeyboardButton(str(day_number),callback_data=create_callback_data("DAY",year,month,day_number)))
+                button_name = str(day_number)
+                if datetime.date(year, month, day_number) in note_dates:
+                    button_name = "📓"
+                if int(day_number) == now.day and month == now.month and year == now.year:
+                    button_name = "☘️"
+                row.append(InlineKeyboardButton(button_name,callback_data=create_callback_data("DAY",year,month,day_number)))
         keyboard.append(row)
     #Last row - Buttons
     row=[]
@@ -180,59 +204,46 @@ def process_calendar_selection(bot,update):
     if action == "IGNORE":
         bot.answer_callback_query(callback_query_id= query.id)
     elif action == "DAY":
-        bot.edit_message_text(text=query.message.text,
-            chat_id=query.message.chat_id,
-            message_id=query.message.message_id
-            )
+        bot.delete_message(chat_id=query.message.chat_id,message_id=query.message.message_id)
         ret_data = True,datetime.datetime(int(year),int(month),int(day))
     elif action == "PREV-MONTH":
         pre = curr - datetime.timedelta(days=1)
         bot.edit_message_text(text=query.message.text,
             chat_id=query.message.chat_id,
             message_id=query.message.message_id,
-            reply_markup=create_calendar(int(pre.year),int(pre.month)))
+            reply_markup=create_calendar(int(pre.year),int(pre.month), query.message.chat_id))
     elif action == "NEXT-MONTH":
         ne = curr + datetime.timedelta(days=31)
         bot.edit_message_text(text=query.message.text,
             chat_id=query.message.chat_id,
             message_id=query.message.message_id,
-            reply_markup=create_calendar(int(ne.year),int(ne.month)))
+            reply_markup=create_calendar(int(ne.year),int(ne.month), query.message.chat_id))
+    elif action == "CALENDAR":
+        bot.edit_message_text(text="Select date:",
+                              chat_id=query.message.chat_id,
+                              message_id=query.message.message_id,
+                              reply_markup=create_calendar(int(year),int(month), query.message.chat_id))
     else:
         bot.answer_callback_query(callback_query_id= query.id,text="Something went wrong!")
     return ret_data
 
 
 
-def save_note(chat_id: int, a1: str, b1: str, c1: str):
+def save_note(chat_id: int, a: str, b: str, c: str):
     session = Session(engine)
     session.execute(
-        "INSERT INTO diary(chat_id, date_time, a1, b1, c1) SELECT :chat_id, now(), :a1, :b1, :c1",
-        {"chat_id": chat_id, "a1": a1, "b1": b1, "c1": c1}
+        "INSERT INTO diary(chat_id, date_time, a, b, c, is_reflected) SELECT :chat_id, now(), :a, :b, :c, 'f'",
+        {"chat_id": chat_id, "a": a, "b": b, "c": c}
     )
     session.commit()
     session.close()
-
-
-def has_at_least_one_note(chat_id: int, date):
-    session = Session(engine)
-    rs = session.execute(
-        "SELECT COUNT(*) FROM diary "
-        "WHERE chat_id = :chat_id AND "
-        "(date_time > :date-interval '1 day' OR date_time < :date-interval '1 day')",
-        {"chat_id": chat_id, "date": date}
-    )
-    session.commit()
-    session.close()
-    rate_num = rs.first()[0]
-    is_exist = rate_num > 0
-    return is_exist
 
 
 def get_last_notes_existence_since_date(chat_id: int, date, n):
     session = Session(engine)
     rs = session.execute(
         "WITH date_grouped AS ("
-        "SELECT date_time::timestamp::date AS date, COUNT(a1) FROM temp WHERE chat_id = :chat_id GROUP BY date"
+        "SELECT date_time::timestamp::date AS date, COUNT(a) FROM diary WHERE chat_id = :chat_id GROUP BY date"
         ") SELECT * FROM date_grouped "
         "WHERE date < :date "
         "ORDER BY date "
@@ -250,14 +261,14 @@ def get_last_notes_existence_since_date(chat_id: int, date, n):
 def get_notes(chat_id: int, date):
     session = Session(engine)
     rs = session.execute(
-        "SELECT a1, b1, c1, a2, b2, c2 FROM diary "
+        "SELECT a, b, c, b1, c1 FROM diary "
         "WHERE chat_id = :chat_id AND "
-        "(date_time > :date-interval '1 day' OR date_time < :date-interval '1 day')",
+        "(date_time > :date-interval '12 hours' AND date_time < :date+interval '12 hours')",
         {"chat_id": chat_id, "date": date}
     )
     answer = []
     for row in rs:
-        answer.append(Note(row[0], row[1], row[2], row[3], row[4], row[5]))
+        answer.append(Note(row[0], row[1], row[2], row[3], row[4]))
     session.commit()
     session.close()
     return answer
@@ -276,7 +287,7 @@ if __name__ == '__main__':
         dispatcher.add_handler(CommandHandler(command='note', callback=note))
         dispatcher.add_handler(CommandHandler(command='rate', callback=rate))
         dispatcher.add_handler(CommandHandler(command='show', callback=show))
-        dispatcher.add_handler(CommandHandler(command='calendar', callback=calendar))
+        dispatcher.add_handler(CommandHandler(command='calendar', callback=calendar_handler))
         dispatcher.add_handler(CallbackQueryHandler(inline_handler))
         dispatcher.add_error_handler(error)
         updater.start_polling(allowed_updates=True)
