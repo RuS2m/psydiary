@@ -18,7 +18,7 @@ logger = get_logger()
 def start(bot: Bot, update: Update):
     chat_id = update.message.chat.id
     text = 'Hello, here instruction how to use this bot:\n' \
-           '/note -- add note\n' \
+           '/note -- add note in ABC model format, where all three parts separated from each other with # sign\n' \
            '/calendar -- show calendar, representing all notes\n' \
            '/rate -- rate your self-esteem\n' \
            '/show -- shows self-esteem graphs\n'
@@ -147,18 +147,28 @@ def notes_inline_handler(bot,update):
                           parse_mode='HTML')
 
 
+@run_async
+def reflect_inline_handler(bot, update):
+    chat_id = update.effective_chat['id']
+    query = update.callback_query
+    (action, note_id) = separate_callback_data(query.data)
+    bot.edit_message_text(text="Write your reflection parts (B1, C1), separated by '#'",
+                          chat_id=query.message.chat_id,
+                          message_id=query.message.message_id)
+
+
 def note_with_keyboard_on_page(chat_id, date, page_number):
     notes = get_notes(chat_id, date)
-    strnotes = [str(note) for note in notes]
+    note = notes[page_number]
     html_text="<b>%s</b>" % date.strftime("%d/%m/%Y")
-    if len(strnotes) > page_number:
-        html_text = strnotes[page_number]
-        html_text = "<b>%s</b>\n\n %s" % (date.strftime("%d/%m/%Y"), html_text)
+    if len(notes) > page_number:
+        html_text = "<b>%s</b>\n\n %s" % (date.strftime("%d/%m/%Y"), str(note))
     keyboard = []
     row = []
-    row.append(
-        InlineKeyboardButton("🗓️", callback_data=create_callback_data("CALENDAR", date.year, date.month, date.day)))
-    keyboard.append(row)
+    if not note.is_reflected:
+        row.append(
+            InlineKeyboardButton("reflect", callback_data="r_REFLECT;%s" % note.note_id))
+        keyboard.append(row)
     row = []
     if page_number > 0:
         row.append(InlineKeyboardButton("<", callback_data="n_NOTES;%s;%s;%s;%s" % (page_number - 1, date.year, date.month, date.day)))
@@ -167,9 +177,13 @@ def note_with_keyboard_on_page(chat_id, date, page_number):
             InlineKeyboardButton(">", callback_data="n_NOTES;%s;%s;%s;%s" % (page_number + 1, date.year, date.month, date.day))
         )
     keyboard.append(row)
+    #TODO: check how it looks and if it will be needed -- try to place REFLECT button in between arrows, or near by calendar
+    row = []
+    row.append(
+        InlineKeyboardButton("🗓️", callback_data=create_callback_data("CALENDAR", date.year, date.month, date.day)))
+    keyboard.append(row)
     reply_keyboard = InlineKeyboardMarkup(keyboard)
     return html_text, reply_keyboard
-
 
 
 def create_callback_data(action,year,month,day):
@@ -254,7 +268,6 @@ def process_calendar_selection(bot,update):
     return ret_data
 
 
-
 def save_note(chat_id: int, a: str, b: str, c: str):
     session1 = Session(engine)
     rs1 = session1.execute("SELECT note_id FROM diary ORDER BY note_id DESC LIMIT 1")
@@ -263,7 +276,7 @@ def save_note(chat_id: int, a: str, b: str, c: str):
     rate_num = rs1.first()
     max_note_id = 1
     if (rate_num is not None) and len(rate_num) != 0 and (rate_num[0]) and (rate_num[0] > 0):
-        max_note_id = rate_num[0]
+        max_note_id = rate_num[0] + 1
     session2 = Session(engine)
     session2.execute(
         "INSERT INTO diary(note_id, chat_id, date_time, a, b, c, is_reflected) SELECT :note_id, :chat_id, now(), :a, :b, :c, 'f'",
@@ -295,7 +308,7 @@ def get_last_notes_existence_since_date(chat_id: int, date, n):
 def get_notes(chat_id: int, date):
     session = Session(engine)
     rs = session.execute(
-        "SELECT note_id, a, b, c, b1, c1 FROM diary "
+        "SELECT note_id, a, b, c, b1, c1, is_reflected FROM diary "
         "WHERE chat_id = :chat_id AND "
         "(date_time > :date-interval '12 hours' AND date_time < :date+interval '12 hours')",
         {"chat_id": chat_id, "date": date}
@@ -303,7 +316,7 @@ def get_notes(chat_id: int, date):
     answer = []
     for row in rs:
         print(row)
-        answer.append(Note(int(row[0]), row[1], row[2], row[3], row[4], row[5]))
+        answer.append(Note(int(row[0]), row[1], row[2], row[3], row[4], row[5], bool(row[6])))
     session.commit()
     session.close()
     return answer
@@ -325,6 +338,7 @@ if __name__ == '__main__':
         dispatcher.add_handler(CommandHandler(command='calendar', callback=calendar_handler))
         dispatcher.add_handler(CallbackQueryHandler(inline_handler, pattern="c_"))
         dispatcher.add_handler(CallbackQueryHandler(notes_inline_handler, pattern="n_"))
+        dispatcher.add_handler(CallbackQueryHandler(reflect_inline_handler, pattern="r_"))
         dispatcher.add_error_handler(error)
         updater.start_polling(allowed_updates=True)
         updater.idle()
