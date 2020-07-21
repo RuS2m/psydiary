@@ -2,7 +2,7 @@ import os
 
 
 class BotConfig:
-    token = os.environ.get("TOKEN", "Your telegram bot key")
+    token = os.environ.get("TOKEN", "Your token here")
 
 
 class DbConfig:

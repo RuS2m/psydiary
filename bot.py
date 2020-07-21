@@ -60,7 +60,7 @@ def show(bot: Bot, update: Update):
         title = "Self-esteem ratings for moth until %s.%s" % (month, d.year)
         ax.set_title(title, family="monospace", pad=20)
         fig.autofmt_xdate()
-    fig = "self-esteem%s-%s-%s.png" % (d.year, d.month, d.day)
+    fig = "self-esteem%s.png" % chat_id
     plt.savefig(fig)
     bot.send_photo(chat_id=chat_id, photo=open(fig, 'rb'))
 
@@ -124,25 +124,59 @@ def calendar_handler(bot: Bot, update: Update):
 @run_async
 def inline_handler(bot,update):
     chat_id = update.effective_chat['id']
-    print(chat_id)
     selected,date = process_calendar_selection(bot, update)
     if selected:
-        notes = get_notes(chat_id, date)
-        strnotes = [ str(note) for note in notes ]
-        all_notes = "\n\n------------------------------\n\n".join(strnotes)
-        row = []
-        row.append(InlineKeyboardButton("🗓️",callback_data=create_callback_data("CALENDAR",date.year,date.month,date.day)))
-        reply_keyboard = InlineKeyboardMarkup([row])
+        text, reply_keyboard = note_with_keyboard_on_page(chat_id, date, 0)
         bot.send_message(chat_id=update.callback_query.from_user.id,
-                        text="<b>%s</b>\n\n %s" % (date.strftime("%d/%m/%Y"), all_notes),
+                        text=text,
                         reply_markup=reply_keyboard,
                         parse_mode='HTML')
 
+
+@run_async
+def notes_inline_handler(bot,update):
+    chat_id = update.effective_chat['id']
+    query = update.callback_query
+    (action, page, year, month, day) = separate_callback_data(query.data)
+    date = datetime.datetime(int(year), int(month), int(day))
+    text, reply_keyboard = note_with_keyboard_on_page(chat_id, date, int(page))
+    bot.edit_message_text(text=text,
+                          chat_id=query.message.chat_id,
+                          message_id=query.message.message_id,
+                          reply_markup=reply_keyboard,
+                          parse_mode='HTML')
+
+
+def note_with_keyboard_on_page(chat_id, date, page_number):
+    notes = get_notes(chat_id, date)
+    strnotes = [str(note) for note in notes]
+    html_text="<b>%s</b>" % date.strftime("%d/%m/%Y")
+    if len(strnotes) > page_number:
+        html_text = strnotes[page_number]
+        html_text = "<b>%s</b>\n\n %s" % (date.strftime("%d/%m/%Y"), html_text)
+    keyboard = []
+    row = []
+    row.append(
+        InlineKeyboardButton("🗓️", callback_data=create_callback_data("CALENDAR", date.year, date.month, date.day)))
+    keyboard.append(row)
+    row = []
+    if page_number > 0:
+        row.append(InlineKeyboardButton("<", callback_data="n_NOTES;%s;%s;%s;%s" % (page_number - 1, date.year, date.month, date.day)))
+    if len(notes) > page_number + 1:
+        row.append(
+            InlineKeyboardButton(">", callback_data="n_NOTES;%s;%s;%s;%s" % (page_number + 1, date.year, date.month, date.day))
+        )
+    keyboard.append(row)
+    reply_keyboard = InlineKeyboardMarkup(keyboard)
+    return html_text, reply_keyboard
+
+
+
 def create_callback_data(action,year,month,day):
-    return ";".join([action,str(year),str(month),str(day)])
+    return "c_%s" % ";".join([action,str(year),str(month),str(day)])
 
 def separate_callback_data(data):
-    return data.split(";")
+    return data.split("_")[1].split(";")
 
 
 def create_calendar(year=None,month=None,chat_id=None):
@@ -189,14 +223,6 @@ def create_calendar(year=None,month=None,chat_id=None):
 
 
 def process_calendar_selection(bot,update):
-    """
-    Process the callback_query. This method generates a new calendar if forward or
-    backward is pressed. This method should be called inside a CallbackQueryHandler.
-    :param telegram.Bot bot: The bot, as provided by the CallbackQueryHandler
-    :param telegram.Update update: The update, as provided by the CallbackQueryHandler
-    :return: Returns a tuple (Boolean,datetime.datetime), indicating if a date is selected
-                and returning the date if so.
-    """
     ret_data = (False,None)
     query = update.callback_query
     (action,year,month,day) = separate_callback_data(query.data)
@@ -230,13 +256,21 @@ def process_calendar_selection(bot,update):
 
 
 def save_note(chat_id: int, a: str, b: str, c: str):
-    session = Session(engine)
-    session.execute(
-        "INSERT INTO diary(chat_id, date_time, a, b, c, is_reflected) SELECT :chat_id, now(), :a, :b, :c, 'f'",
-        {"chat_id": chat_id, "a": a, "b": b, "c": c}
+    session1 = Session(engine)
+    rs1 = session1.execute("SELECT note_id FROM diary ORDER BY note_id DESC LIMIT 1")
+    session1.commit()
+    session1.close()
+    rate_num = rs1.first()
+    max_note_id = 1
+    if (rate_num is not None) and len(rate_num) != 0 and (rate_num[0]) and (rate_num[0] > 0):
+        max_note_id = rate_num[0]
+    session2 = Session(engine)
+    session2.execute(
+        "INSERT INTO diary(note_id, chat_id, date_time, a, b, c, is_reflected) SELECT :note_id, :chat_id, now(), :a, :b, :c, 'f'",
+        {"note_id": max_note_id, "chat_id": chat_id, "a": a, "b": b, "c": c}
     )
-    session.commit()
-    session.close()
+    session2.commit()
+    session2.close()
 
 
 def get_last_notes_existence_since_date(chat_id: int, date, n):
@@ -261,14 +295,15 @@ def get_last_notes_existence_since_date(chat_id: int, date, n):
 def get_notes(chat_id: int, date):
     session = Session(engine)
     rs = session.execute(
-        "SELECT a, b, c, b1, c1 FROM diary "
+        "SELECT note_id, a, b, c, b1, c1 FROM diary "
         "WHERE chat_id = :chat_id AND "
         "(date_time > :date-interval '12 hours' AND date_time < :date+interval '12 hours')",
         {"chat_id": chat_id, "date": date}
     )
     answer = []
     for row in rs:
-        answer.append(Note(row[0], row[1], row[2], row[3], row[4]))
+        print(row)
+        answer.append(Note(int(row[0]), row[1], row[2], row[3], row[4], row[5]))
     session.commit()
     session.close()
     return answer
@@ -288,7 +323,8 @@ if __name__ == '__main__':
         dispatcher.add_handler(CommandHandler(command='rate', callback=rate))
         dispatcher.add_handler(CommandHandler(command='show', callback=show))
         dispatcher.add_handler(CommandHandler(command='calendar', callback=calendar_handler))
-        dispatcher.add_handler(CallbackQueryHandler(inline_handler))
+        dispatcher.add_handler(CallbackQueryHandler(inline_handler, pattern="c_"))
+        dispatcher.add_handler(CallbackQueryHandler(notes_inline_handler, pattern="n_"))
         dispatcher.add_error_handler(error)
         updater.start_polling(allowed_updates=True)
         updater.idle()

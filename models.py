@@ -4,7 +4,8 @@ class RatingEvent:
         self.datetime = datetime
 
 class Note:
-    def __init__(self, a, b, c, b1, c1):
+    def __init__(self, note_id, a, b, c, b1, c1):
+        self.note_id = note_id
         self.a = str(a).strip()
         self.b = str(b).strip()
         self.c = str(c).strip()
