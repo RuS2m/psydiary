@@ -1,26 +1,120 @@
-from db import engine, Base
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton, Update, Bot, ReplyKeyboardRemove
-from telegram.ext import Updater, CommandHandler, run_async, CallbackQueryHandler, Filters, MessageHandler
-from utils import get_logger
-from sqlalchemy.orm import Session
-from config import BotConfig
+import calendar
 import datetime
+import os
+import sys
+import logging
 import matplotlib
 import matplotlib.pyplot as plt
+from sqlalchemy.orm import Session
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton, Update, Bot
+from telegram.ext import Updater, CallbackQueryHandler, Filters, MessageHandler
+
+from config import BotConfig
+from db import engine, Base
 from models import *
-import sys
-import calendar
 
 matplotlib.use('agg')
-logger = get_logger()
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 HELLO_MESSAGE = 'Hello, here instruction how to use this bot:\n' \
                '/note -- add note in ABC model format, where all three parts separated from each other with # sign\n' \
                '/calendar -- show calendar, representing all notes\n' \
                '/rate -- rate your self-esteem\n' \
                '/show -- shows self-esteem graphs\n'
+START_COMMAND = "/start"
+RATE_COMMAND = "/rate"
+SHOW_COMMAND = "/show"
+NOTE_COMMAND = "/note"
+CALENDAR_COMMAND = "/calendar"
+QUERY_SEPARATOR_SYMBOL = ";"
+IGNORE_ACTION = "IGNORE"
+CALENDAR_ACTION = "CALENDAR"
+PREV_MONTH_ACTION = "PREV-MONTH"
+NEXT_MONTH_ACTION = "NEXT-MONTH"
+DAY_ACTION = "DAY"
+NOTES_ACTION = "NOTES"
+REFLECT_ACTION = "REFLECT"
+CALENDAR_ACTIONS=[CALENDAR_ACTION, PREV_MONTH_ACTION, NEXT_MONTH_ACTION, DAY_ACTION]
+
+def handle_message(bot: Bot, update: Update):
+    chat_id = update.message.chat.id
+    message_text = update.message.text
+    if START_COMMAND in message_text:
+        bot.send_message(chat_id=chat_id, text=HELLO_MESSAGE)
+    elif RATE_COMMAND in message_text:
+        rate_handler(bot, chat_id, message_text)
+    elif SHOW_COMMAND in message_text:
+        show_handler(bot, chat_id)
+    elif NOTE_COMMAND in message_text:
+        note_handler(bot, chat_id, message_text)
+    elif CALENDAR_COMMAND in message_text:
+        bot.send_message(chat_id, text="Select date:", reply_markup=create_calendar(chat_id=chat_id))
+    else:
+        reflect_needed, answer_info = is_answer_needed(chat_id, "REFLECT")
+        if reflect_needed:
+            reflection_answer(bot, message_text, chat_id, answer_info)
+
+
+def inline_handler(bot,update):
+    chat_id = update.effective_chat['id']
+    query = update.callback_query
+    action = query.data.split(QUERY_SEPARATOR_SYMBOL)[0]
+    if action == IGNORE_ACTION:
+        bot.answer_callback_query(callback_query_id=query.id)
+    if action == DAY_ACTION:
+        (action, year, month, day) = separate_callback_data(query.data)
+        date = datetime.datetime(int(year), int(month), int(day))
+        text, reply_keyboard = note_with_keyboard_on_page(chat_id, date, 0)
+        bot.edit_message_text(text=text,
+                         chat_id=query.message.chat_id,
+                         reply_markup=reply_keyboard,
+                         message_id=query.message.message_id,
+                         parse_mode='HTML')
+    elif action == PREV_MONTH_ACTION:
+        (action, year, month, day) = separate_callback_data(query.data)
+        date = datetime.datetime(int(year), int(month), 1)
+        pre = date - datetime.timedelta(days=1)
+        bot.edit_message_text(text=query.message.text,
+                              chat_id=query.message.chat_id,
+                              message_id=query.message.message_id,
+                              reply_markup=create_calendar(int(pre.year), int(pre.month), query.message.chat_id))
+    elif action == NEXT_MONTH_ACTION:
+        (action, year, month, day) = separate_callback_data(query.data)
+        date = datetime.datetime(int(year), int(month), 1)
+        ne = date + datetime.timedelta(days=31)
+        bot.edit_message_text(text=query.message.text,
+                              chat_id=query.message.chat_id,
+                              message_id=query.message.message_id,
+                              reply_markup=create_calendar(int(ne.year), int(ne.month), query.message.chat_id))
+    elif action == CALENDAR_ACTION:
+        (action, year, month, day) = separate_callback_data(query.data)
+        bot.edit_message_text(text="Select date:",
+                              chat_id=query.message.chat_id,
+                              message_id=query.message.message_id,
+                              reply_markup=create_calendar(int(year), int(month), query.message.chat_id))
+    elif action == NOTES_ACTION:
+        (action, page, year, month, day) = separate_callback_data(query.data)
+        date = datetime.datetime(int(year), int(month), int(day))
+        text, reply_keyboard = note_with_keyboard_on_page(chat_id, date, int(page))
+        bot.edit_message_text(text=text,
+                              chat_id=query.message.chat_id,
+                              message_id=query.message.message_id,
+                              reply_markup=reply_keyboard,
+                              parse_mode='HTML')
+    elif action == REFLECT_ACTION:
+        (action, note_id) = separate_callback_data(query.data)
+        answer_need_switch(chat_id, "REFLECT", str(note_id))
+        bot.edit_message_text(text="Write your reflection parts (B1, C1), separated by '#'",
+                              chat_id=query.message.chat_id,
+                              message_id=query.message.message_id)
+    else:
+        bot.answer_callback_query(callback_query_id=query.id, text="Something went wrong!")
+        # print("something triggered, but nothing happened: %s" % action)
+
 
 def rate_handler(bot: Bot, chat_id: int, message: str):
-    rating = message.split("/rate")[1].strip()
+    rating = parse_command_argument(message, RATE_COMMAND)
     if (not rating) or (not rating.isdigit()):
         bot.send_message(chat_id, "Sorry, you were't provided rating :(")
     else:
@@ -30,6 +124,7 @@ def rate_handler(bot: Bot, chat_id: int, message: str):
         else:
             save_rate(chat_id, rating)
             bot.send_message(chat_id, "Rating was successfully send")
+
 
 def show_handler(bot: Bot, chat_id: int):
     r = get_rates(chat_id)
@@ -53,47 +148,11 @@ def show_handler(bot: Bot, chat_id: int):
     fig = "self-esteem%s.png" % chat_id
     plt.savefig(fig)
     bot.send_photo(chat_id=chat_id, photo=open(fig, 'rb'))
+    os.remove(fig)
 
 
-def save_rate(chat_id: int, rate: int):
-    session = Session(engine)
-    session.execute(
-        "INSERT INTO rates(chat_id, date_time, rate) SELECT :chat_id, now(), :rate",
-        {"chat_id": chat_id, "rate": rate}
-    )
-    session.commit()
-    session.close()
-
-
-def is_rate_exist(chat_id: int):
-    session = Session(engine)
-    rs = session.execute(
-        "SELECT COUNT(*) FROM rates WHERE chat_id = :chat_id AND date_time > now()-interval '1 day'",
-        {"chat_id": chat_id}
-    )
-    session.commit()
-    session.close()
-    rate_num = rs.first()[0]
-    is_exist = rate_num > 0
-    return is_exist
-
-
-def get_rates(chat_id: int):
-    session = Session(engine)
-    answer = []
-    rs = session.execute(
-        "SELECT rate, date_time FROM rates WHERE chat_id = :chat_id ORDER BY date_time ",
-        { "chat_id": chat_id }
-    )
-    for row in rs:
-        answer.append(RatingEvent(int(row[0]), row[1]))
-    session.commit()
-    session.close()
-    return answer
-
-
-def note_handler(chat_id: int, message: str, bot: Bot):
-    abc = message.split('/note')[1].split("#")
+def note_handler(bot: Bot, chat_id: int, message: str):
+    abc = parse_command_argument(message, NOTE_COMMAND).split("#")
     if len(abc) < 3:
         bot.send_message(chat_id, "Something went wrong, please provide text, spaced with two '#' signs :(")
     else:
@@ -117,68 +176,12 @@ def reflection_answer(bot: Bot, message: str, chat_id: int, answer_info: str):
         bot.send_message(chat_id, "Reflection note was successfully send")
 
 
-def handle_message(bot: Bot, update: Update):
-    chat_id = update.message.chat.id
-    message_text = update.message.text
-    if "/start" in message_text:
-        bot.send_message(chat_id=chat_id, text=HELLO_MESSAGE)
-    elif "/rate" in message_text:
-        rate_handler(bot, chat_id, message_text)
-    elif "/show" in message_text:
-        show_handler(bot, chat_id)
-    elif "/note" in message_text:
-        note_handler(chat_id, message_text, bot)
-    elif "/calendar" in message_text:
-        bot.send_message(chat_id, text="Select date:", reply_markup=create_calendar(chat_id=chat_id))
-    else:
-        reflect_needed, answer_info = is_answer_needed(chat_id, "REFLECT")
-        if reflect_needed:
-            reflection_answer(bot, message_text, chat_id, answer_info)
-
-
-@run_async
-def inline_handler(bot,update):
-    chat_id = update.effective_chat['id']
-    selected,date = process_calendar_selection(bot, update)
-    if selected:
-        text, reply_keyboard = note_with_keyboard_on_page(chat_id, date, 0)
-        bot.send_message(chat_id=update.callback_query.from_user.id,
-                        text=text,
-                        reply_markup=reply_keyboard,
-                        parse_mode='HTML')
-
-
-@run_async
-def notes_inline_handler(bot,update):
-    chat_id = update.effective_chat['id']
-    query = update.callback_query
-    (action, page, year, month, day) = separate_callback_data(query.data)
-    date = datetime.datetime(int(year), int(month), int(day))
-    text, reply_keyboard = note_with_keyboard_on_page(chat_id, date, int(page))
-    bot.edit_message_text(text=text,
-                          chat_id=query.message.chat_id,
-                          message_id=query.message.message_id,
-                          reply_markup=reply_keyboard,
-                          parse_mode='HTML')
-
-
-@run_async
-def reflect_inline_handler(bot, update):
-    chat_id = update.effective_chat['id']
-    query = update.callback_query
-    (action, note_id) = separate_callback_data(query.data)
-    answer_need_switch(chat_id, "REFLECT", str(note_id))
-    bot.edit_message_text(text="Write your reflection parts (B1, C1), separated by '#'",
-                          chat_id=query.message.chat_id,
-                          message_id=query.message.message_id)
-
-
 def note_with_keyboard_on_page(chat_id, date, page_number):
     notes = get_notes(chat_id, date)
     if notes is None or len(notes) == 0:
         html_text = "<b>%s</b>" % date.strftime("%d/%m/%Y")
         return html_text, InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🗓️", callback_data=create_callback_data("CALENDAR", date.year, date.month, date.day))]]
+            [[InlineKeyboardButton("🗓️", callback_data=create_callback_data(CALENDAR_ACTION, date.year, date.month, date.day))]]
         )
     else:
         note = notes[page_number]
@@ -188,40 +191,30 @@ def note_with_keyboard_on_page(chat_id, date, page_number):
         keyboard = []
         row = []
         if page_number > 0:
-            row.append(InlineKeyboardButton("<", callback_data="n_NOTES;%s;%s;%s;%s" % (page_number - 1, date.year, date.month, date.day)))
+            row.append(InlineKeyboardButton("<", callback_data=create_callback_data(NOTES_ACTION, page_number - 1, date.year, date.month, date.day)))
         if len(notes) > page_number + 1:
             row.append(
-                InlineKeyboardButton(">", callback_data="n_NOTES;%s;%s;%s;%s" % (page_number + 1, date.year, date.month, date.day))
+                InlineKeyboardButton(">", callback_data=create_callback_data(NOTES_ACTION, page_number + 1, date.year, date.month, date.day))
             )
         keyboard.append(row)
         row = []
         row.append(
-            InlineKeyboardButton("🗓️", callback_data=create_callback_data("CALENDAR", date.year, date.month, date.day)))
+            InlineKeyboardButton("🗓️", callback_data=create_callback_data(CALENDAR_ACTION, date.year, date.month, date.day)))
         if not note.is_reflected:
             row.append(
-                InlineKeyboardButton("reflect", callback_data="r_REFLECT;%s" % note.note_id))
+                InlineKeyboardButton("reflect", callback_data=create_callback_data(REFLECT_ACTION, note.note_id)))
         keyboard.append(row)
         reply_keyboard = InlineKeyboardMarkup(keyboard)
         return html_text, reply_keyboard
-
-
-def create_callback_data(action,year,month,day):
-    return "c_%s" % ";".join([action,str(year),str(month),str(day)])
-
-def separate_callback_data(data):
-    return data.split("_")[1].split(";")
 
 
 def create_calendar(year=None,month=None,chat_id=None):
     now = datetime.datetime.now()
     if year == None: year = now.year
     if month == None: month = now.month
-    data_ignore = create_callback_data("IGNORE", year, month, 0)
+    data_ignore = create_callback_data(IGNORE_ACTION, year, month, 0)
     keyboard = []
-    #First row - Month and Year
-    row=[]
-    row.append(InlineKeyboardButton(calendar.month_name[month]+" "+str(year),callback_data=data_ignore))
-    keyboard.append(row)
+    keyboard.append([InlineKeyboardButton(calendar.month_name[month]+" "+str(year),callback_data=data_ignore)])
 
     my_calendar = calendar.monthcalendar(year, month)
     number_of_days = 0
@@ -243,48 +236,54 @@ def create_calendar(year=None,month=None,chat_id=None):
                     button_name = "📓"
                 if int(day_number) == now.day and month == now.month and year == now.year:
                     button_name = "☘️"
-                row.append(InlineKeyboardButton(button_name,callback_data=create_callback_data("DAY",year,month,day_number)))
+                row.append(InlineKeyboardButton(button_name,callback_data=create_callback_data(DAY_ACTION,year,month,day_number)))
         keyboard.append(row)
-    #Last row - Buttons
-    row=[]
-    row.append(InlineKeyboardButton("<",callback_data=create_callback_data("PREV-MONTH",year,month,day_number)))
-    row.append(InlineKeyboardButton(" ",callback_data=data_ignore))
-    row.append(InlineKeyboardButton(">",callback_data=create_callback_data("NEXT-MONTH",year,month,day_number)))
+    row=[
+        InlineKeyboardButton("<",callback_data=create_callback_data(PREV_MONTH_ACTION,year,month,day_number)),
+        InlineKeyboardButton(" ",callback_data=data_ignore),
+        InlineKeyboardButton(">",callback_data=create_callback_data(NEXT_MONTH_ACTION,year,month,day_number))]
     keyboard.append(row)
 
     return InlineKeyboardMarkup(keyboard)
 
 
-def process_calendar_selection(bot,update):
-    ret_data = (False,None)
-    query = update.callback_query
-    (action,year,month,day) = separate_callback_data(query.data)
-    curr = datetime.datetime(int(year), int(month), 1)
-    if action == "IGNORE":
-        bot.answer_callback_query(callback_query_id= query.id)
-    elif action == "DAY":
-        bot.delete_message(chat_id=query.message.chat_id,message_id=query.message.message_id)
-        ret_data = True,datetime.datetime(int(year),int(month),int(day))
-    elif action == "PREV-MONTH":
-        pre = curr - datetime.timedelta(days=1)
-        bot.edit_message_text(text=query.message.text,
-            chat_id=query.message.chat_id,
-            message_id=query.message.message_id,
-            reply_markup=create_calendar(int(pre.year),int(pre.month), query.message.chat_id))
-    elif action == "NEXT-MONTH":
-        ne = curr + datetime.timedelta(days=31)
-        bot.edit_message_text(text=query.message.text,
-            chat_id=query.message.chat_id,
-            message_id=query.message.message_id,
-            reply_markup=create_calendar(int(ne.year),int(ne.month), query.message.chat_id))
-    elif action == "CALENDAR":
-        bot.edit_message_text(text="Select date:",
-                              chat_id=query.message.chat_id,
-                              message_id=query.message.message_id,
-                              reply_markup=create_calendar(int(year),int(month), query.message.chat_id))
-    else:
-        bot.answer_callback_query(callback_query_id= query.id,text="Something went wrong!")
-    return ret_data
+def save_rate(chat_id: int, rate: int):
+    date = datetime.date.today()
+    session = Session(engine)
+    session.execute(
+        "INSERT INTO rates(chat_id, date_time, rate) SELECT :chat_id, :date, :rate",
+        {"chat_id": chat_id, "rate": rate, "date": date}
+    )
+    session.commit()
+    session.close()
+
+
+def is_rate_exist(chat_id: int):
+    date = datetime.date.today()
+    session = Session(engine)
+    rs = session.execute(
+        "SELECT COUNT(*) FROM rates WHERE chat_id = :chat_id AND date_time > :date-interval '1 day'",
+        {"chat_id": chat_id, "date": date}
+    )
+    session.commit()
+    session.close()
+    rate_num = rs.first()[0]
+    is_exist = rate_num > 0
+    return is_exist
+
+
+def get_rates(chat_id: int):
+    session = Session(engine)
+    answer = []
+    rs = session.execute(
+        "SELECT rate, date_time FROM rates WHERE chat_id = :chat_id ORDER BY date_time ",
+        { "chat_id": chat_id }
+    )
+    for row in rs:
+        answer.append(RatingEvent(int(row[0]), row[1]))
+    session.commit()
+    session.close()
+    return answer
 
 
 def save_note(chat_id: int, a: str, b: str, c: str):
@@ -296,10 +295,11 @@ def save_note(chat_id: int, a: str, b: str, c: str):
     max_note_id = 1
     if (rate_num is not None) and len(rate_num) != 0 and (rate_num[0]) and (rate_num[0] > 0):
         max_note_id = rate_num[0] + 1
+    date_time = datetime.datetime.now()
     session2 = Session(engine)
     session2.execute(
-        "INSERT INTO diary(note_id, chat_id, date_time, a, b, c, is_reflected) SELECT :note_id, :chat_id, now(), :a, :b, :c, 'f'",
-        {"note_id": max_note_id, "chat_id": chat_id, "a": a, "b": b, "c": c}
+        "INSERT INTO diary(note_id, chat_id, date_time, a, b, c, is_reflected) SELECT :note_id, :chat_id, :date_time, :a, :b, :c, 'f'",
+        {"note_id": max_note_id, "chat_id": chat_id, "a": a, "b": b, "c": c, "date_time": date_time}
     )
     session2.commit()
     session2.close()
@@ -379,7 +379,7 @@ def get_notes(chat_id: int, date):
     rs = session.execute(
         "SELECT note_id, a, b, c, b1, c1, is_reflected FROM diary "
         "WHERE chat_id = :chat_id AND "
-        "(date_time > :date-interval '12 hours' AND date_time < :date+interval '12 hours')",
+        "(date_time > :date AND date_time < :date+interval '1 days')",
         {"chat_id": chat_id, "date": date}
     )
     answer = []
@@ -392,8 +392,16 @@ def get_notes(chat_id: int, date):
 
 
 def error(update, context):
-    """Log Errors caused by Updates."""
     logger.warning('Update "%s" caused error "%s"', update, context.error)
+
+def parse_command_argument(message: str, command: str):
+    return message.split(command)[1].strip()
+
+def create_callback_data(*args):
+    return QUERY_SEPARATOR_SYMBOL.join([ str(arg) for arg in args ])
+
+def separate_callback_data(data: str):
+    return data.split(QUERY_SEPARATOR_SYMBOL)
 
 if __name__ == '__main__':
     Base.metadata.create_all(engine)
@@ -401,9 +409,7 @@ if __name__ == '__main__':
     dispatcher = updater.dispatcher
     try:
         dispatcher.add_handler(MessageHandler(Filters.text | Filters.command, handle_message))
-        dispatcher.add_handler(CallbackQueryHandler(inline_handler, pattern="c_"))
-        dispatcher.add_handler(CallbackQueryHandler(notes_inline_handler, pattern="n_"))
-        dispatcher.add_handler(CallbackQueryHandler(reflect_inline_handler, pattern="r_"))
+        dispatcher.add_handler(CallbackQueryHandler(inline_handler))
         dispatcher.add_error_handler(error)
         updater.start_polling(allowed_updates=True)
         updater.idle()
