@@ -7,9 +7,8 @@ import logging
 import matplotlib
 import matplotlib.pyplot as plt
 from sqlalchemy.orm import Session
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton, Update, Bot
-from telegram.ext import Updater, CallbackQueryHandler, Filters, MessageHandler
-
+from telegram import *
+from telegram.ext import *
 from config import BotConfig
 from db import engine, Base
 from models import *
